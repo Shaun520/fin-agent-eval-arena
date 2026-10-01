@@ -59,6 +59,7 @@ export const useArenaStore = defineStore('arena', {
       showPicker: false,
       addingModel: false,
       modelPopOpen: false,
+      focusCaseId: null, // 从「评审记录」进题查看：目标题目（仅交互态，不落盘）
     },
 
     toasts: [],
@@ -98,6 +99,39 @@ export const useArenaStore = defineStore('arena', {
     activeModels: (state) => {
       const on = state.chat.active
       return MODELS.concat(state.chat.customModels).filter((m) => on.indexOf(m.id) >= 0)
+    },
+
+    /* 已提问过的问题（跨会话汇总）：评审记录/分析视图只围绕这些展开（复刻原型 askedCases） */
+    askedCases: (state) => {
+      const ids = []
+      state.chat.sessions.forEach((s) =>
+        (s.rounds || []).forEach((r) => {
+          if (r && r.caseId && ids.indexOf(r.caseId) < 0) ids.push(r.caseId)
+        }),
+      )
+      return state.cases.filter((c) => ids.indexOf(c.case_id) >= 0)
+    },
+
+    /* 评审记录表格行：已提问问题 × 该题现有回答，经四维筛选后按题号/模型排序（复刻原型 reviewRows） */
+    reviewRows() {
+      const f = this.filters
+      const out = []
+      this.askedCases.forEach((c) => {
+        this.answersOf(c.case_id).forEach((a) => {
+          out.push({ c, a, r: this.getReview(c.case_id, a.model_id) })
+        })
+      })
+      return out
+        .filter((x) => {
+          if (f.caseId !== 'all' && x.c.case_id !== f.caseId) return false
+          if (f.modelId !== 'all' && x.a.model_id !== f.modelId) return false
+          if (f.status !== 'all' && x.r.status !== f.status) return false
+          if (f.label !== 'all' && x.r.failures.indexOf(f.label) < 0) return false
+          return true
+        })
+        .sort((p, q) =>
+          p.c.case_id < q.c.case_id ? -1 : p.c.case_id > q.c.case_id ? 1 : p.a.model_id < q.a.model_id ? -1 : 1,
+        )
     },
 
     /* 侧边栏徽标：目前只有「评审记录」需要显示已评审条数 */
@@ -768,6 +802,39 @@ export const useArenaStore = defineStore('arena', {
       lsRemove(LS.seeded)
       this.toast(n ? '已清空 ' + n + ' 条演示记录' : '没有演示记录')
       return n
+    },
+
+    /* ------------------------------ 评审记录视图 ------------------------------ */
+    resetFilters() {
+      this.filters = { caseId: 'all', modelId: 'all', status: 'all', label: 'all' }
+    },
+
+    /* 进题查看：定位该题所在的会话与轮次并展开（记录页「题号/查看」入口） */
+    focusCaseRound(caseId) {
+      let session = null
+      let idx = -1
+      for (const s of this.chat.sessions) {
+        const i = (s.rounds || []).findIndex((r) => r && r.kind !== 'chat' && r.caseId === caseId)
+        if (i >= 0) {
+          session = s
+          idx = i
+          break
+        }
+      }
+      if (!session) {
+        /* 该题尚未提问：回到对话评审并预选，等用户提问后再产生记录 */
+        this.chat.selected = caseId
+        return
+      }
+      this.chat.currentId = session.id
+      this.syncSession()
+      this.chat.expandedRounds = [idx]
+      this.chat.focusCaseId = caseId
+      this.persistChat()
+    },
+
+    clearFocusCase() {
+      this.chat.focusCaseId = null
     },
   },
 })
