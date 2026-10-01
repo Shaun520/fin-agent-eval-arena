@@ -5,12 +5,17 @@
       <span class="ac-name">{{ m.name }}</span>
       <Chip v-if="m.baseline" variant="brand">基准</Chip>
       <Chip v-else-if="m.vendor">{{ m.vendor }}</Chip>
+      <Chip v-if="editing" variant="brand">评分编辑中</Chip>
       <span class="spacer"></span>
-      <!-- 未评完时不显示总分（与状态「未评审」重复）；本阶段评分面板尚未实现，故通常为隐藏 -->
+      <!-- 未评完时不显示总分（与状态「未评审」重复）；评完或已提交才显示分数 -->
       <span class="mini-score" :class="{ 'total-none': total === null }">
         <b>{{ total === null ? '未评完' : fmt1(total) }}</b>
       </span>
+      <Chip v-if="review.status === 'done'" variant="ok">已完成</Chip>
+      <Chip v-else-if="review.status === 'doing'" variant="demo">评审中</Chip>
+      <Chip v-else>未评审</Chip>
       <button class="btn ghost sm" title="重新生成" @click="replay">↻</button>
+      <button class="btn ghost sm" :title="editing ? '退出编辑评分' : '编辑评分'" @click="store.toggleEditScore(a.id)">✎</button>
       <button class="btn ghost sm danger" title="删除该回答" @click="remove">✕</button>
     </div>
 
@@ -32,6 +37,9 @@
         </div>
       </div>
     </div>
+
+    <!-- 评审面板：评分 / 标签 / 状态 / 评语 -->
+    <ReviewPanel :c="c" :a="a" />
   </div>
 </template>
 
@@ -42,6 +50,7 @@ import { reviewTotal } from '@/lib/scoring'
 import { fmt1, shortTime } from '@/lib/format'
 import { streamText, STREAM_STAGGER_MS } from '@/lib/stream'
 import Chip from '@/components/common/Chip.vue'
+import ReviewPanel from './ReviewPanel.vue'
 
 const props = defineProps({
   c: { type: Object, required: true },
@@ -54,6 +63,8 @@ const store = useArenaStore()
 const m = computed(() => store.modelOf(props.a.model_id))
 const review = computed(() => store.getReview(props.c.case_id, props.a.model_id))
 const total = computed(() => reviewTotal(review.value))
+/* 是否处于「编辑评分」态（卡头 ✎ 切换） */
+const editing = computed(() => store.isEditingCard(props.c.case_id, props.a.model_id))
 const cites = computed(() => props.a.citations || [])
 
 const streamKey = 'ans_' + props.a.id.replace(/[^a-zA-Z0-9]/g, '_')

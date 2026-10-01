@@ -12,6 +12,8 @@
       </div>
     </main>
     <Toast />
+    <!-- 评审编辑弹窗：全局挂载，当前由存储状态驱动（后续「评审记录」页复用） -->
+    <ReviewModal v-if="store.reviewModal" />
   </div>
 </template>
 
@@ -23,6 +25,7 @@ import AppSidebar from '@/components/layout/AppSidebar.vue'
 import AppTopbar from '@/components/layout/AppTopbar.vue'
 import Toast from '@/components/common/Toast.vue'
 import Composer from '@/components/chat/Composer.vue'
+import ReviewModal from '@/components/review/ReviewModal.vue'
 
 const route = useRoute()
 const store = useArenaStore()
