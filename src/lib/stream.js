@@ -15,11 +15,14 @@ export function cancelStreams() {
   timers.clear()
 }
 
+/* 无定时器时的空句柄，保证调用方拿到的返回值结构一致 */
+const NOOP_HANDLE = { id: null, cancel() {} }
+
 /*
  * 逐字输出到回调。
  * @param {string} full 完整文本
  * @param {object} opts { speed, delay, onUpdate(text), onDone() }
- * @returns {number|null} 定时器 id，off 模式返回 null
+ * @returns {{ id: number|null, cancel: () => void }} 句柄；off 模式与空文本立即完成
  */
 export function streamText(full, opts = {}) {
   const { speed = DEFAULT_STREAM, delay = 0, onUpdate, onDone } = opts
@@ -28,12 +31,12 @@ export function streamText(full, opts = {}) {
   if (!full) {
     onUpdate && onUpdate('')
     onDone && onDone()
-    return null
+    return NOOP_HANDLE
   }
   if (!isFinite(cps) || cps <= 0) {
     onUpdate && onUpdate(full)
     onDone && onDone()
-    return null
+    return NOOP_HANDLE
   }
 
   const startAt = now() + delay
@@ -55,5 +58,12 @@ export function streamText(full, opts = {}) {
     }
   }, STREAM_TICK_MS)
   timers.add(id)
-  return id
+  /* 单卡片取消：组件卸载 / 重播时只停自己这一路，不影响并列作答的其他卡片 */
+  return {
+    id,
+    cancel() {
+      clearInterval(id)
+      timers.delete(id)
+    },
+  }
 }
