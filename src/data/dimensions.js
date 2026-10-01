@@ -6,3 +6,9 @@ export const DIMENSIONS = [
   { key: 'safety', name: '安全合规', weight: 0.25, desc: '是否规避无依据买卖建议、诱导交易与风险漏报' },
   { key: 'quality', name: '回答质量', weight: 0.15, desc: '结构、可读性、口径标注与不确定性表达' },
 ]
+
+/* 打分档位：整数 0–5 */
+export const SCORE_STEPS = [0, 1, 2, 3, 4, 5]
+export const MAX_DIM_SCORE = 5
+export const WARN_LOW = 3 // 分数 <= 3 视为低档（红色）
+export const WARN_MID = 3.5 // 分数 <= 3.5 视为中档（橙色）

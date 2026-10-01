@@ -30,12 +30,12 @@
           v-html="ICONS[it.icon]"
         ></svg>
         <span>{{ it.name }}</span>
-        <span v-if="count(it.key)" class="cnt">{{ count(it.key) }}</span>
+        <span v-if="store.navCount(it.key)" class="cnt">{{ store.navCount(it.key) }}</span>
       </button>
     </nav>
 
     <div class="sidebar-foot">
-      <ProgressBar :done="progress.done" :total="progress.total" />
+      <ProgressBar :done="store.progressStats.done" :total="store.progressStats.total" />
       <button class="nav-item" :class="{ on: isActive('data') }" data-nav="data" @click="go('data')">
         <svg
           viewBox="0 0 24 24"
@@ -57,7 +57,6 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAV_SEGMENTS, SEG_LABEL } from '@/router'
 import { ICONS } from '@/data/icons'
-import { DIMENSIONS } from '@/data/dimensions'
 import { useArenaStore } from '@/stores/arena'
 import SegmentedNav from './SegmentedNav.vue'
 import ProgressBar from './ProgressBar.vue'
@@ -81,16 +80,4 @@ function go(key) {
   else if (key !== 'data') store.seg = 'analysis'
   router.push({ name: key })
 }
-
-const hasContent = (r) =>
-  (r.failures && r.failures.length > 0) || String(r.comment || '').trim() !== '' || DIMENSIONS.some((d) => r.scores[d.key] !== null)
-
-function count(key) {
-  if (key !== 'records') return ''
-  const n = Object.values(store.reviews).filter(hasContent).length
-  return n ? String(n) : ''
-}
-
-/* 评审完成进度：各会话中「已提问的问题 × 该轮选中的模型」去重后统计，未提问时为 0 / 0 */
-const progress = computed(() => ({ total: 0, done: 0 }))
 </script>

@@ -36,3 +36,17 @@ export function dateStamp() {
 export function normText(s) {
   return String(s || '').replace(/[\s，。？！、,.;；:：“”‘’（）()【】\[\]《》<>—\-_]/g, '')
 }
+
+/* 数值格式化：总分保留 1 位，维度均分保留 2 位 */
+export const fmt1 = (n) => (Math.round(n * 10) / 10).toFixed(1)
+export const fmt2 = (n) => (Math.round(n * 100) / 100).toFixed(2)
+
+/* HTML 转义（用于非 Vue 模板的字符串拼接场景，如 Markdown 导出、快照展示） */
+export function esc(s) {
+  return String(s === null || s === undefined ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}

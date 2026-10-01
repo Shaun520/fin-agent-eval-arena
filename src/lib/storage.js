@@ -1,4 +1,4 @@
-/* 存储层：localStorage 主通道 + 内存降级（不可用时提醒且不静默失败） */
+/* 存储层：localStorage 主通道 + 内存 Map 降级（不可用时提醒且不静默失败） */
 
 export const SCHEMA_ID = 'fin-agent-eval/v1'
 
@@ -14,7 +14,8 @@ export const LS = {
 /* 自动保存防抖窗口 */
 export const AUTOSAVE_DEBOUNCE_MS = 260
 
-const memoryFallback = {}
+/* localStorage 不可用时的内存兜底 */
+const memoryFallback = new Map()
 export let storageOK = true
 
 try {
@@ -27,7 +28,7 @@ try {
 
 export function lsGet(key, dflt) {
   try {
-    const raw = storageOK ? localStorage.getItem(key) : memoryFallback[key]
+    const raw = storageOK ? localStorage.getItem(key) : memoryFallback.get(key)
     if (raw === null || raw === undefined) return dflt
     return JSON.parse(raw)
   } catch (e) {
@@ -41,10 +42,10 @@ export function lsSet(key, val) {
     try {
       localStorage.setItem(key, raw)
     } catch (e) {
-      memoryFallback[key] = raw
+      memoryFallback.set(key, raw)
     }
   } else {
-    memoryFallback[key] = raw
+    memoryFallback.set(key, raw)
   }
   return true
 }
@@ -52,8 +53,8 @@ export function lsSet(key, val) {
 export function lsRemove(key) {
   try {
     if (storageOK) localStorage.removeItem(key)
-    else delete memoryFallback[key]
+    else memoryFallback.delete(key)
   } catch (e) {
-    delete memoryFallback[key]
+    memoryFallback.delete(key)
   }
 }
