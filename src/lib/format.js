@@ -41,6 +41,18 @@ export function normText(s) {
 export const fmt1 = (n) => (Math.round(n * 10) / 10).toFixed(1)
 export const fmt2 = (n) => (Math.round(n * 100) / 100).toFixed(2)
 
+/* 引用文本框解析：每行一条「标题 | 机构 | 日期」 */
+export function parseCitations(text) {
+  return String(text || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const p = l.split('|').map((s) => s.trim())
+      return { title: p[0] || '未命名来源', org: p[1] || '', published_at: p[2] || '' }
+    })
+}
+
 /* HTML 转义（用于非 Vue 模板的字符串拼接场景，如 Markdown 导出、快照展示） */
 export function esc(s) {
   return String(s === null || s === undefined ? '' : s)

@@ -1,11 +1,11 @@
 import { defineStore } from 'pinia'
-import { MODELS } from '@/data/models'
+import { MODELS, CUSTOM_MODEL_PALETTE } from '@/data/models'
 import { DIMENSIONS } from '@/data/dimensions'
 import BUILTIN_CASES from '@/data/cases.json'
 import BUILTIN_ANSWERS from '@/data/answers.json'
 import { LS, lsGet, lsSet, lsRemove } from '@/lib/storage'
 import { STREAM_SPEEDS, DEFAULT_STREAM } from '@/lib/stream'
-import { clone } from '@/lib/format'
+import { clone, normText, parseCitations } from '@/lib/format'
 import { keyOf, reviewTotal, isSolved } from '@/lib/scoring'
 
 /* 新建会话（仅会话内使用，不入持久层结构之外的字段） */
@@ -84,6 +84,12 @@ export const useArenaStore = defineStore('arena', {
         })
       })
       return { total, done }
+    },
+
+    /* 当前参与作答的模型（内置 + 自定义，按 chat.active 过滤） */
+    activeModels: (state) => {
+      const on = state.chat.active
+      return MODELS.concat(state.chat.customModels).filter((m) => on.indexOf(m.id) >= 0)
     },
 
     /* 侧边栏徽标：目前只有「评审记录」需要显示已评审条数 */
@@ -239,6 +245,7 @@ export const useArenaStore = defineStore('arena', {
       this.persistChat()
       this.persistAnswers()
       this.persistReviews()
+      this.toast('已删除 ' + this.modelOf(modelId).name + ' 的回答')
     },
 
     /* ------------------------------ 评审记录 ------------------------------ */
@@ -360,6 +367,196 @@ export const useArenaStore = defineStore('arena', {
       this.chat.rounds = s ? s.rounds : []
       const last = this.chat.rounds.length - 1
       this.chat.expandedRounds = last >= 0 ? [last] : []
+    },
+
+    /* ------------------------------ 对话评审：查询 ------------------------------ */
+    modelOf(id) {
+      return (
+        this.allModels().find((m) => m.id === id) || { id, name: id, short: id, vendor: '', color: '#8a8f98' }
+      )
+    },
+
+    caseById(caseId) {
+      return this.cases.find((c) => c.case_id === caseId) || null
+    },
+
+    /* 参考问题 = 内置的、带参考答案的问题；自由提问不进这个列表 */
+    referenceCases() {
+      return this.cases.filter((c) => !c.free)
+    },
+
+    /* 某题的完成进度：已提交评审的回答数 / 该题现有回答数 */
+    reviewProgress(caseId) {
+      const as = this.answersOf(caseId)
+      return {
+        done: as.filter((a) => this.getReview(caseId, a.model_id).status === 'done').length,
+        total: as.length,
+      }
+    },
+
+    isRoundExpanded(idx) {
+      return this.chat.expandedRounds.indexOf(idx) >= 0
+    },
+
+    toggleRound(idx) {
+      const at = this.chat.expandedRounds.indexOf(idx)
+      if (at >= 0) this.chat.expandedRounds.splice(at, 1)
+      else this.chat.expandedRounds.push(idx)
+    },
+
+    collapseRound(idx) {
+      const at = this.chat.expandedRounds.indexOf(idx)
+      if (at >= 0) this.chat.expandedRounds.splice(at, 1)
+    },
+
+    /* ------------------------------ 对话评审：选题 / 提问 ------------------------------ */
+    /* 选中一条参考问题：带入输入框、进入评审模式（题干写入由 Composer 监听 selected 完成） */
+    pickQuestion(caseId) {
+      this.chat.selected = caseId
+      this.chat.showPicker = false
+      this.chat.reviewMode = true
+    },
+
+    toggleReviewMode() {
+      this.chat.reviewMode = !this.chat.reviewMode
+      this.chat.modelPopOpen = false
+      this.persistChat()
+      this.toast(this.chat.reviewMode ? '已开启评审模式：提问将触发选中模型作答' : '已切换为日常对话')
+    },
+
+    pickDefaultModel() {
+      this.chat.reviewMode = false
+      this.chat.modelPopOpen = false
+      this.persistChat()
+      this.toast('已选择默认模型：日常对话')
+    },
+
+    /* 勾选/取消模型：只改变后续提问的作答模型集合，不改动已提问回合的卡片（与原型一致）。
+       增减已提问回合的卡片只能通过「再次提问该题」或卡片上的 ✕ 删除回答。 */
+    toggleModel(modelId) {
+      if (!this.chat.reviewMode) return
+      const i = this.chat.active.indexOf(modelId)
+      if (i >= 0) {
+        if (this.chat.active.length <= 1) {
+          this.toast('至少保留一个模型参与回答', true)
+          return
+        }
+        this.chat.active.splice(i, 1)
+      } else {
+        this.chat.active.push(modelId)
+      }
+      this.persistChat()
+    },
+
+    addCustomModel(name, vendor) {
+      const n = this.chat.customModels.length
+      const id = 'custom_' + Date.now().toString(36) + n
+      this.chat.customModels.push({
+        id,
+        name,
+        short: name.slice(0, 3),
+        vendor,
+        color: CUSTOM_MODEL_PALETTE[n % CUSTOM_MODEL_PALETTE.length],
+        custom: true,
+      })
+      this.chat.active.push(id)
+      this.chat.reviewMode = true
+      this.chat.addingModel = false
+      this.persistChat()
+      this.toast('已新增模型：' + name + '（需要粘贴回答后才能评分）')
+    },
+
+    /* 提问：选中的模型并行作答；同一题重复提问则复用该回合并刷新时间 */
+    askQuestion(caseId) {
+      const ids = this.activeModels.map((m) => m.id)
+      if (!ids.length) {
+        this.toast('请至少选择一个模型', true)
+        return
+      }
+      const c = this.caseById(caseId)
+      if (!c) {
+        this.toast('没有找到这条问题，请重新输入', true)
+        return
+      }
+      let idx = this.chat.rounds.findIndex((rd) => rd.caseId === caseId)
+      if (idx >= 0) {
+        this.chat.rounds[idx].modelIds = ids
+        this.chat.rounds[idx].askedAt = new Date().toISOString()
+      } else {
+        this.chat.rounds.push({ caseId, modelIds: ids, askedAt: new Date().toISOString() })
+        idx = this.chat.rounds.length - 1
+      }
+      if (this.chat.expandedRounds.indexOf(idx) < 0) this.chat.expandedRounds.push(idx)
+      this.chat.selected = null
+      this.chat.showPicker = false
+      this.persistChat()
+      this.toast(ids.length + ' 个模型正在作答')
+    },
+
+    /* 日常对话：不触发评审，固定回复 */
+    askDaily(text) {
+      this.chat.rounds.push({ kind: 'chat', text, askedAt: new Date().toISOString() })
+      const idx = this.chat.rounds.length - 1
+      if (this.chat.expandedRounds.indexOf(idx) < 0) this.chat.expandedRounds.push(idx)
+      this.chat.selected = null
+      this.chat.showPicker = false
+      this.chat.modelPopOpen = false
+      this.persistChat()
+    },
+
+    /* 输入文本与内置参考问题匹配（去掉空白与标点后比较） */
+    matchCase(text) {
+      const t = normText(text)
+      if (t.length < 4) return null
+      for (const c of this.cases) {
+        if (normText(c.question) === t) return c
+      }
+      for (const c of this.cases) {
+        const q = normText(c.question)
+        if (q.indexOf(t) >= 0 || t.indexOf(q) >= 0) return c
+      }
+      return null
+    },
+
+    /* 自由提问：没有内置参考答案，评分以评审人判断为准 */
+    createFreeQuestion(question) {
+      const text = String(question || '').trim()
+      const id = 'free_' + Date.now().toString(36)
+      const short = text.length > 16 ? text.slice(0, 16) + '…' : text
+      this.cases.push({
+        case_id: id,
+        title: short,
+        question: text,
+        reference_answer: '',
+        reference_values: [],
+        allowed_evidence: [],
+        cutoff_at: '',
+        risk_labels: [],
+        focus: '',
+        free: true,
+      })
+      this.persistCases()
+      this.toast('已加入一条自由提问（无内置参考答案，按你的判断评分）')
+      return id
+    },
+
+    /* ------------------------------ 对话评审：回答录入 ------------------------------ */
+    pendingSubmit(caseId, modelId, text, citesText) {
+      const t = String(text || '').trim()
+      if (!t) {
+        this.toast('请先粘贴该模型的回答', true)
+        return false
+      }
+      this.putAnswer(caseId, modelId, t, parseCitations(citesText))
+      this.toast('已录入 ' + this.modelOf(modelId).name + ' 的回答')
+      return true
+    },
+
+    pendingSkip(caseId, modelId) {
+      this.chat.rounds.forEach((rd) => {
+        if (rd.caseId === caseId) rd.modelIds = rd.modelIds.filter((id) => id !== modelId)
+      })
+      this.persistChat()
     },
 
     /* ------------------------------ 提示 ------------------------------ */
