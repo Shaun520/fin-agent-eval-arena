@@ -39,9 +39,9 @@
           <span>{{ ids.length }} 个模型作答 · {{ shortTime(rd.askedAt) }}</span>
           <Chip>本轮进度 {{ doneN }} / {{ ids.length }}</Chip>
           <button class="btn ghost sm" @click="collapse">收起</button>
+          <button class="btn ghost sm" @click="store.exportRound(c.case_id)">导出本轮</button>
         </div>
       </div>
-      <QuestionCard :c="c" />
       <div class="answers">
         <AnswerCard v-for="a in answers" :key="a.id" :c="c" :a="a" :order="ids.indexOf(a.model_id)" />
         <PendingCard v-for="id in pending" :key="id" :c="c" :model-id="id" />
@@ -56,7 +56,6 @@ import { useArenaStore } from '@/stores/arena'
 import { reviewTotal } from '@/lib/scoring'
 import { fmt1, shortTime } from '@/lib/format'
 import Chip from '@/components/common/Chip.vue'
-import QuestionCard from './QuestionCard.vue'
 import AnswerCard from './AnswerCard.vue'
 import PendingCard from './PendingCard.vue'
 

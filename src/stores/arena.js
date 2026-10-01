@@ -3,10 +3,15 @@ import { MODELS, CUSTOM_MODEL_PALETTE } from '@/data/models'
 import { DIMENSIONS } from '@/data/dimensions'
 import BUILTIN_CASES from '@/data/cases.json'
 import BUILTIN_ANSWERS from '@/data/answers.json'
-import { LS, lsGet, lsSet, lsRemove } from '@/lib/storage'
+import DEMO_REVIEWS from '@/data/demoReviews.json'
+import { LS, lsGet, lsSet, lsRemove, AUTOSAVE_DEBOUNCE_MS } from '@/lib/storage'
 import { STREAM_SPEEDS, DEFAULT_STREAM } from '@/lib/stream'
-import { clone, normText, parseCitations } from '@/lib/format'
+import { clone, normText, parseCitations, dateStamp } from '@/lib/format'
+import { buildCaseExport, downloadJSON } from '@/lib/export'
 import { keyOf, reviewTotal, isSolved } from '@/lib/scoring'
+
+/* 评分自动保存的防抖句柄（模块级单例：同一时刻只保留一次待落盘的写入） */
+let reviewSaveTimer = null
 
 /* 新建会话（仅会话内使用，不入持久层结构之外的字段） */
 function newSession() {
@@ -31,6 +36,9 @@ export const useArenaStore = defineStore('arena', {
 
     /* 评审记录：key = `caseId||modelId` */
     reviews: {},
+
+    /* 评审编辑弹窗的草稿（不落盘）：null 表示未打开 */
+    reviewModal: null,
 
     stream: DEFAULT_STREAM,
     filters: { caseId: 'all', modelId: 'all', status: 'all', label: 'all' },
@@ -291,14 +299,29 @@ export const useArenaStore = defineStore('arena', {
       if (r && !this.hasAnyReviewContent(r) && r.status === 'none' && !r.demo) delete this.reviews[k]
     },
 
-    /* 变更后的统一收尾：更新时间戳、去掉演示标记、清理空记录、落盘 */
-    touchReview(caseId, modelId) {
+    /* 评分变更走防抖落盘（复刻 AUTOSAVE_DEBOUNCE_MS）；提交/保存等关键动作立即落盘 */
+    schedulePersistReviews() {
+      if (reviewSaveTimer) clearTimeout(reviewSaveTimer)
+      reviewSaveTimer = setTimeout(() => {
+        reviewSaveTimer = null
+        this.persistReviews()
+      }, AUTOSAVE_DEBOUNCE_MS)
+    },
+
+    /* 变更后的统一收尾：更新时间戳、去掉演示标记、清理空记录、落盘（默认防抖，可要求立即） */
+    touchReview(caseId, modelId, immediate = false) {
       const r = this.reviews[keyOf(caseId, modelId)]
       if (!r) return
       r.updated_at = new Date().toISOString()
       r.demo = false
       this.pruneEmpty(caseId, modelId)
-      this.persistReviews()
+      if (immediate) this.persistReviews()
+      else this.schedulePersistReviews()
+    },
+
+    /* 已提交且未进入「编辑评分」= 锁定 */
+    isLocked(caseId, modelId) {
+      return this.getReview(caseId, modelId).status === 'done' && !this.isEditingCard(caseId, modelId)
     },
 
     /* 评分锁定：已提交的记录默认锁定，进入「编辑评分」后解锁 */
@@ -306,10 +329,24 @@ export const useArenaStore = defineStore('arena', {
       return this.chat.editing === 'ans_' + (caseId + '::' + modelId).replace(/[^a-zA-Z0-9]/g, '_')
     },
 
+    /* 卡头 ✎：进入/退出「编辑评分」（只解锁评分区，回答正文不可改） */
+    toggleEditScore(answerId) {
+      const key = 'ans_' + String(answerId).replace(/[^a-zA-Z0-9]/g, '_')
+      this.chat.editing = this.chat.editing === key ? null : key
+    },
+
+    /* 界面文案用「主题 / 问题摘要」，内部编号只出现在导出 JSON 里 */
+    caseLabel(caseId) {
+      const c = this.caseById(caseId)
+      if (!c) return '一条提问'
+      if (c.title) return c.title
+      const q = String(c.question || '')
+      return q.length > 14 ? q.slice(0, 14) + '…' : q || '自由提问'
+    },
+
     setScore(caseId, modelId, dim, v) {
-      const cur = this.getReview(caseId, modelId)
-      if (cur.status === 'done' && !this.isEditingCard(caseId, modelId)) {
-        this.toast('该评审已提交，如需修改请到「评审记录」中编辑', true)
+      if (this.isLocked(caseId, modelId)) {
+        this.toast('该评审已提交，如需修改请点卡片右上角 ✎ 解锁', true)
         return
       }
       const r = this.ensureReview(caseId, modelId)
@@ -319,9 +356,8 @@ export const useArenaStore = defineStore('arena', {
     },
 
     toggleTag(caseId, modelId, tag) {
-      const cur = this.getReview(caseId, modelId)
-      if (cur.status === 'done' && !this.isEditingCard(caseId, modelId)) {
-        this.toast('该评审已提交，如需修改请到「评审记录」中编辑', true)
+      if (this.isLocked(caseId, modelId)) {
+        this.toast('该评审已提交，如需修改请点卡片右上角 ✎ 解锁', true)
         return
       }
       const r = this.ensureReview(caseId, modelId)
@@ -332,18 +368,59 @@ export const useArenaStore = defineStore('arena', {
       this.touchReview(caseId, modelId)
     },
 
+    setComment(caseId, modelId, text) {
+      if (this.isLocked(caseId, modelId)) return false
+      const r = this.ensureReview(caseId, modelId)
+      r.comment = text
+      if (r.status === 'none' && this.hasAnyReviewContent(r)) r.status = 'doing'
+      this.touchReview(caseId, modelId)
+      return true
+    },
+
+    /* 缺失的维度名（提交校验用） */
+    missingDims(r) {
+      return DIMENSIONS.filter((d) => r.scores[d.key] === null || r.scores[d.key] === undefined).map((d) => d.name)
+    },
+
+    /* 三态切换：置「已完成」时必须五维齐全，否则拦截并提示缺失维度 */
     setStatus(caseId, modelId, s) {
       const r = this.ensureReview(caseId, modelId)
-      r.status = s
       if (s === 'done') {
+        const missing = this.missingDims(r)
+        if (missing.length) {
+          this.toast('无法标记已完成，以下维度未打分：' + missing.join('、'), true)
+          return false
+        }
+        r.status = 'done'
         r.reviewed_at = r.reviewed_at || new Date().toISOString()
-        const missing = DIMENSIONS.filter((d) => r.scores[d.key] === null).map((d) => d.name)
-        if (missing.length) this.toast('已标记完成，但以下维度未打分：' + missing.join('、'), true)
+        this.chat.editing = null
+      } else {
+        r.status = s
       }
-      this.touchReview(caseId, modelId)
+      this.touchReview(caseId, modelId, true)
+      return true
+    },
+
+    /* 提交/重新提交评审：缺维度直接拦截，不允许置 done */
+    submitReview(caseId, modelId) {
+      const r = this.ensureReview(caseId, modelId)
+      const missing = this.missingDims(r)
+      if (missing.length) {
+        this.toast('还有未打分的维度，无法提交：' + missing.join('、'), true)
+        return false
+      }
+      r.status = 'done'
+      r.reviewed_at = new Date().toISOString()
+      r.updated_at = r.reviewed_at
+      r.demo = false
+      this.chat.editing = null
+      this.persistReviews()
+      this.toast('已提交评审：' + this.caseLabel(caseId) + ' / ' + this.modelOf(modelId).name)
+      return true
     },
 
     saveReview(caseId, modelId) {
+      if (this.isLocked(caseId, modelId)) return
       const r = this.ensureReview(caseId, modelId)
       r.status = r.status === 'none' ? 'doing' : r.status
       r.reviewed_at = new Date().toISOString()
@@ -351,13 +428,98 @@ export const useArenaStore = defineStore('arena', {
       r.demo = false
       this.persistReviews()
       const t = reviewTotal(r)
-      this.toast('已保存：' + caseId + ' / ' + modelId + ' · ' + (t === null ? '未评完' : '总分 ' + t.toFixed(1)))
+      this.toast(
+        '已保存：' + this.caseLabel(caseId) + ' / ' + this.modelOf(modelId).name + ' · ' + (t === null ? '未评完' : '总分 ' + t.toFixed(1)),
+      )
     },
 
     resetReview(caseId, modelId) {
+      if (this.isLocked(caseId, modelId)) {
+        this.toast('该评审已提交，如需修改请点卡片右上角 ✎ 解锁', true)
+        return
+      }
       delete this.reviews[keyOf(caseId, modelId)]
       this.persistReviews()
       this.toast('已清空该回答的评分')
+    },
+
+    /* 导出本轮：单个问题（题目 + 回答 + 该题评审）导出为 JSON */
+    exportRound(caseId) {
+      const c = this.caseById(caseId)
+      if (!c) return
+      const payload = buildCaseExport(caseId, {
+        cases: this.cases,
+        answersOf: (id) => this.answersOf(id),
+        reviews: this.allReviews,
+        models: this.allModels(),
+        stream: this.stream,
+      })
+      const n = this.cases.findIndex((x) => x.case_id === caseId) + 1
+      downloadJSON(payload, 'fin-agent-eval-case' + n + '-' + dateStamp() + '.json')
+      this.toast('已导出「' + this.caseLabel(caseId) + '」（含评审）')
+    },
+
+    /* ------------------------------ 评审编辑弹窗（草稿态，保存才写回） ------------------------------ */
+    openReviewModal(caseId, modelId) {
+      const r = this.getReview(caseId, modelId)
+      const drafts = {}
+      DIMENSIONS.forEach((d) => (drafts[d.key] = r.scores[d.key] === undefined ? null : r.scores[d.key]))
+      this.reviewModal = {
+        caseId,
+        modelId,
+        drafts,
+        failures: (r.failures || []).slice(),
+        comment: r.comment || '',
+        status: r.status,
+      }
+    },
+
+    closeReviewModal() {
+      this.reviewModal = null
+    },
+
+    modalSetScore(dim, v) {
+      const m = this.reviewModal
+      if (!m) return
+      m.drafts[dim] = m.drafts[dim] === v ? null : v
+      if (m.status === 'none') m.status = 'doing'
+    },
+
+    modalToggleTag(tag) {
+      const m = this.reviewModal
+      if (!m) return
+      const i = m.failures.indexOf(tag)
+      if (i >= 0) m.failures.splice(i, 1)
+      else m.failures.push(tag)
+      if (m.status === 'none') m.status = 'doing'
+    },
+
+    modalSetStatus(s) {
+      if (this.reviewModal) this.reviewModal.status = s
+    },
+
+    modalSetComment(text) {
+      if (this.reviewModal) this.reviewModal.comment = text
+    },
+
+    saveReviewModal() {
+      const m = this.reviewModal
+      if (!m) return
+      const r = this.ensureReview(m.caseId, m.modelId)
+      DIMENSIONS.forEach((d) => {
+        r.scores[d.key] = m.drafts[d.key] === undefined ? null : m.drafts[d.key]
+      })
+      r.failures = m.failures.slice()
+      r.comment = m.comment
+      r.status = m.status
+      r.demo = false
+      r.updated_at = new Date().toISOString()
+      if (m.status === 'done') r.reviewed_at = r.reviewed_at || r.updated_at
+      this.persistReviews()
+      const t = reviewTotal(r)
+      const label = this.caseLabel(m.caseId) + ' / ' + this.modelOf(m.modelId).name
+      this.closeReviewModal()
+      this.toast('已保存：' + label + ' · ' + (t === null ? '未评完' : '总分 ' + t.toFixed(1)))
     },
 
     /* ------------------------------ 会话 ------------------------------ */
@@ -569,6 +731,30 @@ export const useArenaStore = defineStore('arena', {
       }, 2300)
     },
 
+    /* 载入 20 条演示评审：只填空位，遇到用户自建记录（非 demo）跳过，避免覆盖真实评审 */
+    loadDemoReviews() {
+      let n = 0
+      DEMO_REVIEWS.forEach((d) => {
+        const k = keyOf(d.case_id, d.model_id)
+        const existing = this.reviews[k]
+        if (existing && !existing.demo) return
+        const r = this.blankReview(d.case_id, d.model_id)
+        DIMENSIONS.forEach((dim) => (r.scores[dim.key] = d.scores[dim.key] === undefined ? null : d.scores[dim.key]))
+        r.failures = (d.failures || []).slice()
+        r.comment = d.comment || ''
+        r.status = d.status
+        r.reviewed_at = d.reviewed_at || null
+        r.updated_at = d.updated_at || null
+        r.demo = true
+        this.reviews[k] = r
+        n++
+      })
+      this.persistReviews()
+      lsSet(LS.seeded, new Date().toISOString())
+      this.toast(n ? '已载入 ' + n + ' 条演示评审记录' : '演示记录已全部存在，未重复载入')
+      return n
+    },
+
     /* 清空演示记录（不触碰真实评审） */
     clearDemoReviews() {
       let n = 0
@@ -580,6 +766,7 @@ export const useArenaStore = defineStore('arena', {
       })
       this.persistReviews()
       lsRemove(LS.seeded)
+      this.toast(n ? '已清空 ' + n + ' 条演示记录' : '没有演示记录')
       return n
     },
   },
