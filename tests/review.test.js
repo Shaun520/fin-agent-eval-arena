@@ -199,6 +199,28 @@ describe('演示评审数据', () => {
     expect(r.demo).toBe(false)
     expect(r.scores.accuracy).toBe(1)
   })
+
+  it('载入演示同时把对应参考问题提问到当前会话，回答与评审一并可见', () => {
+    const { store } = freshStore()
+    expect(store.chat.rounds.length).toBe(0)
+
+    store.loadDemoReviews()
+
+    /* 演示覆盖 5 道题，各成一「轮」，模型为该题演示覆盖的 4 个内置模型 */
+    expect(store.chat.rounds.map((r) => r.caseId)).toEqual(['FQ-001', 'FQ-002', 'FQ-003', 'FQ-004', 'FQ-005'])
+    store.chat.rounds.forEach((r) => expect(r.modelIds).toEqual(['wencai', 'doubao', 'qwen', 'yuanbao']))
+    /* 全部展开：直接看到回答卡与已打分评审 */
+    expect(store.chat.expandedRounds.length).toBe(5)
+    expect(store.getReview('FQ-001', 'wencai').status).toBe('done')
+    /* 落盘后可恢复 */
+    expect(JSON.parse(localStorage.getItem(LS.chat)).sessions[0].rounds.length).toBe(5)
+
+    /* ask:false 只灌评审、不动会话 */
+    localStorage.clear()
+    const b = freshStore()
+    b.store.loadDemoReviews({ ask: false })
+    expect(b.store.chat.rounds.length).toBe(0)
+  })
 })
 
 describe('导出本轮', () => {

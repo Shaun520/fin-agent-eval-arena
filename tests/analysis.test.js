@@ -125,7 +125,7 @@ describe('模型排行榜视图', () => {
   it('无评审数据时给出引导空态（未提问 / 已提问但无 solved 记录）', async () => {
     // 未提问：即使有演示评审也不展示排行榜
     const a = freshStore()
-    a.store.loadDemoReviews()
+    a.store.loadDemoReviews({ ask: false })
     const ra = await mountView(Leaderboard, a.pinia, '/leaderboard')
     expect(ra.wrapper.text()).toContain('还没有提问')
 
@@ -195,7 +195,7 @@ describe('汇总报告视图', () => {
 
   it('未提问时为空状态', async () => {
     const { pinia, store } = freshStore()
-    store.loadDemoReviews()
+    store.loadDemoReviews({ ask: false })
     const { wrapper } = await mountView(Report, pinia, '/report')
     expect(wrapper.text()).toContain('还没有提问')
     expect(wrapper.find('.stats').exists()).toBe(false)

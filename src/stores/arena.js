@@ -1006,8 +1006,14 @@ export const useArenaStore = defineStore('arena', {
       }, 2300)
     },
 
-    /* 载入 20 条演示评审：只填空位，遇到用户自建记录（非 demo）跳过，避免覆盖真实评审 */
-    loadDemoReviews() {
+    /*
+     * 载入 20 条演示评审：只填空位，遇到用户自建记录（非 demo）跳过，避免覆盖真实评审。
+     * @param {object} opts { ask: 是否把演示覆盖的参考问题一并「提问」到当前会话（默认 true） }
+     *   ask 开启时，对话评审里会直接出现这些题目的回答卡与已打分评审；
+     *   传 { ask: false } 只灌评审数据、不动会话（供「有评审但未提问」等场景使用）。
+     */
+    loadDemoReviews(opts = {}) {
+      const ask = opts.ask === undefined ? true : !!opts.ask
       let n = 0
       DEMO_REVIEWS.forEach((d) => {
         const k = keyOf(d.case_id, d.model_id)
@@ -1026,6 +1032,32 @@ export const useArenaStore = defineStore('arena', {
       })
       this.persistReviews()
       lsSet(LS.seeded, new Date().toISOString())
+
+      /* 按题目归集演示覆盖的模型，逐题补一次提问：已有该轮则并入模型，不产生重复轮 */
+      if (ask) {
+        const byCase = {}
+        DEMO_REVIEWS.forEach((d) => {
+          const list = (byCase[d.case_id] = byCase[d.case_id] || [])
+          if (list.indexOf(d.model_id) < 0) list.push(d.model_id)
+        })
+        Object.keys(byCase).forEach((caseId) => {
+          if (!this.caseById(caseId)) return
+          let idx = this.chat.rounds.findIndex((rd) => rd && rd.kind !== 'chat' && rd.caseId === caseId)
+          if (idx < 0) {
+            this.chat.rounds.push({ caseId, modelIds: byCase[caseId].slice(), askedAt: new Date().toISOString() })
+            idx = this.chat.rounds.length - 1
+          } else {
+            const cur = this.chat.rounds[idx].modelIds || []
+            byCase[caseId].forEach((id) => {
+              if (cur.indexOf(id) < 0) cur.push(id)
+            })
+            this.chat.rounds[idx].askedAt = new Date().toISOString()
+          }
+          if (this.chat.expandedRounds.indexOf(idx) < 0) this.chat.expandedRounds.push(idx)
+        })
+        this.persistChat()
+      }
+
       this.toast(n ? '已载入 ' + n + ' 条演示评审记录' : '演示记录已全部存在，未重复载入')
       return n
     },

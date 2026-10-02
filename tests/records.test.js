@@ -56,7 +56,7 @@ function btnByText(wrapper, text) {
 
 /* 让 demo 数据 + 两次提问构造出 8 行记录（FQ-001 / FQ-002 各 4 条） */
 async function seeded(pinia, store) {
-  store.loadDemoReviews()
+  store.loadDemoReviews({ ask: false })
   store.askQuestion('FQ-001')
   store.askQuestion('FQ-002')
   return mountRecords(pinia)
@@ -69,7 +69,7 @@ beforeEach(() => {
 describe('评审记录 · 视图与筛选（复刻 reviewRows）', () => {
   it('未提问时整个视图为空状态，不渲染筛选与表格', async () => {
     const { pinia, store } = freshStore()
-    store.loadDemoReviews() // 只有评审数据、没有提问：记录页仍应为空
+    store.loadDemoReviews({ ask: false }) // 只有评审数据、没有提问：记录页仍应为空
 
     const { wrapper } = await mountRecords(pinia)
     expect(store.askedCases.length).toBe(0)
@@ -80,7 +80,7 @@ describe('评审记录 · 视图与筛选（复刻 reviewRows）', () => {
 
   it('四个筛选维度任意组合均正确过滤', () => {
     const { store } = freshStore()
-    store.loadDemoReviews()
+    store.loadDemoReviews({ ask: false })
     store.askQuestion('FQ-001')
     store.askQuestion('FQ-002')
 
@@ -160,7 +160,7 @@ describe('评审记录 · 视图与筛选（复刻 reviewRows）', () => {
 describe('评审记录 · 编辑已保存记录并跨视图联动', () => {
   it('保存即落盘、刷新后为新值，aggregate 结果同步变化', () => {
     const { store } = freshStore()
-    store.loadDemoReviews()
+    store.loadDemoReviews({ ask: false })
     store.askQuestion('FQ-001')
 
     // 编辑前：FQ-001/wencai 为五维满分演示记录
