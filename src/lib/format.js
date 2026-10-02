@@ -32,6 +32,13 @@ export function dateStamp() {
   return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes())
 }
 
+/* 仅日期戳：20250630（用于「竞技场-全量-YYYYMMDD.json」这类文件名） */
+export function dayStamp() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate())
+}
+
 /* 去除空白与中英文标点，用于自由提问与参考问题的匹配 */
 export function normText(s) {
   return String(s || '').replace(/[\s，。？！、,.;；:：“”‘’（）()【】\[\]《》<>—\-_]/g, '')

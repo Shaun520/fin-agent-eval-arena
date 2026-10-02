@@ -677,6 +677,42 @@
     margin: 3px 0;
   }
 
+  /* 折叠块（复刻原型 details.ref）：用于「数据导入导出」页的只读 JSON 快照 */
+  details.ref {
+    margin-top: 4px;
+    border-top: 1px dashed var(--border);
+    padding-top: 10px;
+  }
+  details.ref > summary {
+    cursor: pointer;
+    font-size: var(--fs-13);
+    color: var(--brand);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+  }
+  details.ref > summary::-webkit-details-marker {
+    display: none;
+  }
+  details.ref > summary:before {
+    content: '▸';
+    transition: 0.15s;
+    display: inline-block;
+    font-size: 10px;
+  }
+  details.ref[open] > summary:before {
+    transform: rotate(90deg);
+  }
+  /* 快照文本域：等宽小字号，只读底色 */
+  textarea.snapshot {
+    margin-top: 10px;
+    font-family: 'Cascadia Mono', Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+
   /* ---------------- Toast ---------------- */
   .toast-wrap {
     position: fixed;
