@@ -142,6 +142,18 @@ export const useArenaStore = defineStore('arena', {
         )
     },
 
+    /* 当前会话的评审轮（日常对话不进「最近评审」）：带 rounds 下标，供侧栏展开定位 */
+    recentRounds: (state) => {
+      const out = []
+      state.chat.rounds.forEach((r, idx) => {
+        if (!r || r.kind === 'chat') return
+        /* 题目已被删除的轮次不再展示（复刻原型 caseById 为空的跳过逻辑） */
+        if (!state.cases.some((c) => c.case_id === r.caseId)) return
+        out.push({ rd: r, idx })
+      })
+      return out
+    },
+
     /* 侧边栏徽标：目前只有「评审记录」需要显示已评审条数 */
     navCount: (state) => (key) => {
       if (key !== 'records') return ''
@@ -739,6 +751,59 @@ export const useArenaStore = defineStore('arena', {
       this.chat.rounds = s ? s.rounds : []
       const last = this.chat.rounds.length - 1
       this.chat.expandedRounds = last >= 0 ? [last] : []
+    },
+
+    /* 会话标题：显式标题优先；否则用首轮内容（日常对话取文本，评审取题面），截 14 字 */
+    sessionTitle(s) {
+      if (!s) return '新会话'
+      if (s.title && s.title !== '新会话') return s.title
+      const first = (s.rounds || [])[0]
+      if (!first) return '新会话'
+      if (first.kind === 'chat') return String(first.text || '日常对话').slice(0, 14)
+      const c = this.caseById(first.caseId)
+      return c ? String(c.question || c.title || '新会话').slice(0, 14) : '新会话'
+    },
+
+    /* 新建会话：置顶并切为当前，清空选择 / 编辑 / 选题弹层（复刻原型 createSession） */
+    createSession(silent = false) {
+      const s = newSession()
+      this.chat.sessions.unshift(s)
+      this.chat.currentId = s.id
+      this.chat.selected = null
+      this.chat.editing = null
+      this.chat.showPicker = false
+      this.syncSession()
+      this.persistChat()
+      if (!silent) this.toast('已新建会话')
+      return s
+    },
+
+    /* 切换会话：仅切换当前指针，不改动两侧轮次（复刻原型 switchSession） */
+    switchSession(id) {
+      if (!this.chat.sessions.some((s) => s.id === id) || this.chat.currentId === id) return
+      this.chat.currentId = id
+      this.chat.editing = null
+      this.chat.addingModel = false
+      this.chat.showPicker = false
+      this.syncSession()
+      this.persistChat()
+    },
+
+    /* 删除会话：仅移除对话记录，已保存的评审记录保留；删空自动补一个（复刻原型 deleteSession） */
+    deleteSession(id) {
+      const s = this.chat.sessions.find((x) => x.id === id)
+      if (!s) return
+      const ok = window.confirm(
+        '删除会话「' + this.sessionTitle(s) + '」？\n仅移除这次对话记录，已保存的评审记录仍保留在「评审记录」中。',
+      )
+      if (!ok) return
+      this.chat.sessions = this.chat.sessions.filter((x) => x.id !== id)
+      if (!this.chat.sessions.length) this.chat.sessions.push(newSession())
+      if (this.chat.currentId === id) this.chat.currentId = this.chat.sessions[0].id
+      this.chat.editing = null
+      this.syncSession()
+      this.persistChat()
+      this.toast('已删除会话')
     },
 
     /* ------------------------------ 对话评审：查询 ------------------------------ */

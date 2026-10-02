@@ -8,13 +8,10 @@
       @click="$emit('pick', c.case_id)"
     >
       <span class="qcard-top">
-        <span class="qnum">{{ c.case_id }}</span>
         <span class="qtag">{{ c.title || '参考问题' }}</span>
       </span>
       <span class="qtext">{{ c.question }}</span>
-      <span class="qcard-foot">
-        <span>已评测 {{ store.reviewProgress(c.case_id).done }} / {{ store.reviewProgress(c.case_id).total }} 条回答</span>
-      </span>
+
     </button>
   </div>
 </template>
