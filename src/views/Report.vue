@@ -13,10 +13,10 @@
   <template v-else>
     <!-- 概览统计卡 -->
     <div class="stats">
-      <StatCard k="问题数" :v="store.askedCases.length" />
-      <StatCard k="回答数" :v="totalAns" unit="条" />
-      <StatCard k="已完成评审" :v="status.done" :unit="' / ' + totalAns" />
-      <StatCard k="完成率" :v="totalAns ? ((status.done / totalAns) * 100).toFixed(0) : 0" unit="%" />
+      <StatCard k="问题数" :v="data.askedCount" />
+      <StatCard k="回答数" :v="data.totalAns" unit="条" />
+      <StatCard k="已完成评审" :v="data.doneCount" :unit="' / ' + data.totalAns" />
+      <StatCard k="完成率" :v="data.rate" unit="%" />
     </div>
 
     <!-- 存在「已完成但维度缺失」的记录：被统计排除，提示去处理 -->
@@ -49,10 +49,10 @@
               <Chip v-if="m.baseline" variant="brand" style="margin-left: 4px">基准</Chip>
               <Chip v-else-if="m.custom" variant="demo" style="margin-left: 4px">自定义</Chip>
             </td>
-            <td class="num" style="font-weight: 650">{{ avgOf(agg.byModel[m.id]) }}</td>
-            <td class="num">{{ agg.byModel[m.id].n }} / {{ store.askedCases.length }}</td>
-            <td v-for="d in DIMENSIONS" :key="d.key" class="num">{{ dimOf(agg.byModel[m.id], d.key) }}</td>
-            <td class="num">{{ labelSum(agg.byModel[m.id]) }}</td>
+            <td class="num" style="font-weight: 650">{{ avgOf(data.agg.byModel[m.id]) }}</td>
+            <td class="num">{{ data.agg.byModel[m.id].n }} / {{ data.askedCount }}</td>
+            <td v-for="d in DIMENSIONS" :key="d.key" class="num">{{ dimOf(data.agg.byModel[m.id], d.key) }}</td>
+            <td class="num">{{ labelSum(data.agg.byModel[m.id]) }}</td>
           </tr>
         </tbody>
       </table>
@@ -61,8 +61,8 @@
     <!-- 失败标签总体分布 -->
     <div class="sec-title">失败标签总体分布<span class="line"></span></div>
     <div class="grid2">
-      <div class="card card-pad"><LabelBars :counts="allLabels" title="全部模型" /></div>
-      <div class="card card-pad"><LabelBars :counts="baselineLabels" title="同花顺问财（基准）" /></div>
+      <div class="card card-pad"><LabelBars :counts="data.allLabels" title="全部模型" /></div>
+      <div class="card card-pad"><LabelBars :counts="data.agg.byModel.wencai.labels" title="同花顺问财（基准）" /></div>
     </div>
 
     <!-- 问题 × 模型 对比矩阵 -->
@@ -80,7 +80,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in matrix" :key="row.c.case_id">
+              <tr v-for="row in data.matrix" :key="row.c.case_id">
                 <td>
                   <span class="qnum">{{ store.caseLabel(row.c.case_id) }}</span>
                   {{ (row.c.title || '').slice(0, 14) }}
@@ -121,10 +121,9 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useArenaStore } from '@/stores/arena'
 import { DIMENSIONS } from '@/data/dimensions'
-import { LABEL_MAP } from '@/data/failureLabels'
-import { aggregate, countLabels, reviewTotal } from '@/lib/scoring'
-import { fmt1, fmt2, dateStamp } from '@/lib/format'
-import { reportMarkdown, downloadFile } from '@/lib/export'
+import { reviewTotal } from '@/lib/scoring'
+import { buildReportData } from '@/lib/export'
+import { fmt1, fmt2 } from '@/lib/format'
 import StatCard from '@/components/common/StatCard.vue'
 import Chip from '@/components/common/Chip.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
@@ -133,60 +132,19 @@ import LabelBars from '@/components/charts/LabelBars.vue'
 const store = useArenaStore()
 const router = useRouter()
 
-/* 回答总数 = 已提问问题 × 该题现有回答 */
-const totalAns = computed(() => store.askedCases.reduce((s, c) => s + store.answersOf(c.case_id).length, 0))
-
-/* 状态计数：只统计「已提问问题 × 该题回答」（复刻原型 countStatus） */
-const status = computed(() => {
-  const c = { none: 0, doing: 0, done: 0 }
-  store.askedCases.forEach((cs) => {
-    store.answersOf(cs.case_id).forEach((a) => {
-      const s = store.getReview(cs.case_id, a.model_id).status
-      c[s] = (c[s] || 0) + 1
-    })
-  })
-  return c
-})
-
-/* 汇总口径：全部问题的「已完成且五维齐全」记录 */
-const agg = computed(() => aggregate('all', { reviews: store.allReviews, models: store.allModels() }))
-
-/* 全部有评审内容的记录（含评审中），用于标签总体分布 */
-const reviewed = computed(() => store.allReviews.filter((r) => store.hasAnyReviewContent(r)))
-const allLabels = computed(() => countLabels(reviewed.value))
-const baselineLabels = computed(() => agg.value.byModel.wencai.labels)
+/* 报告数据统一由 buildReportData 装配：页面与导出的 Markdown 报告共用同一口径 */
+const data = computed(() =>
+  buildReportData({
+    cases: store.cases,
+    answers: store.cases.flatMap((c) => store.answersOf(c.case_id)),
+    reviews: store.allReviews,
+    models: store.allModels(),
+    askedCaseIds: store.askedCases.map((c) => c.case_id),
+  }),
+)
 
 /* 「已完成但维度缺失」的记录：被统计排除 */
 const unfinished = computed(() => store.allReviews.filter((r) => r.status === 'done' && reviewTotal(r) === null))
-
-/* 问题 × 模型矩阵：每格总分（状态 done 且五维齐全才计入均分）+ 状态，行尾均分与 Top3 标签 */
-const matrix = computed(() =>
-  store.askedCases.map((c) => {
-    const answers = store.answersOf(c.case_id)
-    let sum = 0
-    let n = 0
-    const labelCount = {}
-    const cells = store.allModels().map((m) => {
-      const a = answers.find((x) => x.model_id === m.id)
-      if (!a) return { model: m, none: true }
-      const r = store.getReview(c.case_id, m.id)
-      const t = reviewTotal(r)
-      if (r.status === 'done' && t !== null) {
-        sum += t
-        n++
-      }
-      r.failures.forEach((k) => {
-        labelCount[k] = (labelCount[k] || 0) + 1
-      })
-      return { model: m, t, status: r.status }
-    })
-    const topLabels = Object.entries(labelCount)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([k, v]) => ({ key: k, name: LABEL_MAP[k] ? LABEL_MAP[k].name : k, n: v }))
-    return { c, cells, avg: n ? sum / n : null, topLabels }
-  }),
-)
 
 function avgOf(s) {
   return s && s.avg !== null ? fmt1(s.avg) : '—'
@@ -206,17 +164,7 @@ function scoreColor(t) {
 }
 
 function exportReport() {
-  const md = reportMarkdown({
-    generatedAt: new Date().toLocaleString('zh-CN'),
-    askedCount: store.askedCases.length,
-    totalAns: totalAns.value,
-    doneCount: status.value.done,
-    agg: agg.value,
-    models: store.allModels(),
-    allLabels: allLabels.value,
-  })
-  downloadFile(md, 'fin-agent-eval-report-' + dateStamp() + '.md', 'text/markdown')
-  store.toast('已导出汇总报告（Markdown）')
+  store.exportReport()
 }
 
 function goChat() {

@@ -1,5 +1,6 @@
-import { DIMENSIONS, MAX_DIM_SCORE, WARN_LOW, WARN_MID } from '@/data/dimensions'
-import { FAILURE_LABELS } from '@/data/failureLabels'
+/* 用相对路径（带 .js）：Vite 与 Node（scripts/report.mjs）都能直接加载 */
+import { DIMENSIONS, MAX_DIM_SCORE, WARN_LOW, WARN_MID } from '../data/dimensions.js'
+import { FAILURE_LABELS } from '../data/failureLabels.js'
 
 /* 评审状态文案 */
 export const TO_LABEL = { none: '未评审', doing: '评审中', done: '已完成' }

@@ -1,14 +1,22 @@
 import { defineStore } from 'pinia'
 import { MODELS, CUSTOM_MODEL_PALETTE } from '@/data/models'
-import { DIMENSIONS } from '@/data/dimensions'
+import { DIMENSIONS, MAX_DIM_SCORE } from '@/data/dimensions'
 import BUILTIN_CASES from '@/data/cases.json'
 import BUILTIN_ANSWERS from '@/data/answers.json'
 import DEMO_REVIEWS from '@/data/demoReviews.json'
 import { LS, lsGet, lsSet, lsRemove, AUTOSAVE_DEBOUNCE_MS } from '@/lib/storage'
 import { STREAM_SPEEDS, DEFAULT_STREAM } from '@/lib/stream'
-import { clone, normText, parseCitations, dateStamp } from '@/lib/format'
-import { buildCaseExport, downloadJSON } from '@/lib/export'
-import { keyOf, reviewTotal, isSolved } from '@/lib/scoring'
+import { clone, normText, parseCitations, dateStamp, dayStamp } from '@/lib/format'
+import {
+  buildCaseExport,
+  buildExport,
+  buildReportData,
+  reportMarkdown,
+  downloadJSON,
+  downloadFile,
+  copyText,
+} from '@/lib/export'
+import { keyOf, reviewTotal, isSolved, TO_LABEL } from '@/lib/scoring'
 
 /* 评分自动保存的防抖句柄（模块级单例：同一时刻只保留一次待落盘的写入） */
 let reviewSaveTimer = null
@@ -491,6 +499,174 @@ export const useArenaStore = defineStore('arena', {
       const n = this.cases.findIndex((x) => x.case_id === caseId) + 1
       downloadJSON(payload, 'fin-agent-eval-case' + n + '-' + dateStamp() + '.json')
       this.toast('已导出「' + this.caseLabel(caseId) + '」（含评审）')
+    },
+
+    /* ------------------------------ 数据导入导出（P6，复刻原型 buildExport / importData） ------------------------------ */
+    /* 按范围导出 JSON：all=全量 / reviews=仅评审记录 / answers=仅回答 */
+    exportData(scope) {
+      const payload = buildExport(scope, {
+        cases: this.cases,
+        answersOf: (id) => this.answersOf(id),
+        reviews: this.allReviews,
+        models: MODELS,
+        stream: this.stream,
+      })
+      const names = { all: '竞技场-全量-', reviews: '竞技场-评审记录-', answers: '竞技场-回答-' }
+      downloadJSON(payload, (names[scope] || '竞技场-导出-') + dayStamp() + '.json')
+      this.toast(scope === 'reviews' ? '已导出评审记录' : scope === 'answers' ? '已导出回答' : '已导出全部数据')
+    },
+
+    /* 复制全量 JSON 到剪贴板 */
+    copyAllJSON() {
+      const payload = buildExport('all', {
+        cases: this.cases,
+        answersOf: (id) => this.answersOf(id),
+        reviews: this.allReviews,
+        models: MODELS,
+        stream: this.stream,
+      })
+      return copyText(JSON.stringify(payload, null, 2)).then((ok) => {
+        this.toast(ok ? '已复制到剪贴板' : '复制失败，请手动选择文本', !ok)
+        return ok
+      })
+    },
+
+    /*
+     * 导入数据（复刻原型 importData 合并规则）。
+     * @param {object} obj   导出 JSON
+     * @param {object} opts  { replace: 是否替换内置题目与回答, reviews: 是否同时导入评审记录 }
+     * @returns {string[]}   成功导入项描述，空数组表示未识别到可导入内容
+     */
+    importData(obj, opts = {}) {
+      const replace = !!opts.replace
+      const withReviews = opts.reviews === undefined ? true : !!opts.reviews
+      if (!obj || typeof obj !== 'object') {
+        this.toast('导入失败：不是有效的 JSON 对象', true)
+        return []
+      }
+      const ok = []
+
+      /* 题目：按 case_id 合并（replace 时整体替换） */
+      if (Array.isArray(obj.cases) && obj.cases.length) {
+        if (replace) {
+          this.cases = obj.cases.map(clone)
+        } else {
+          const map = Object.fromEntries(this.cases.map((c) => [c.case_id, c]))
+          obj.cases.forEach((c) => {
+            map[c.case_id] = clone(c)
+          })
+          this.cases = Object.values(map)
+        }
+        this.persistCases()
+        ok.push(obj.cases.length + ' 题')
+      }
+
+      /* 回答：标记 custom，按 id 去重覆盖（replace 时整体替换自定义层） */
+      if (Array.isArray(obj.answers) && obj.answers.length) {
+        const incoming = obj.answers.map((a) => Object.assign(clone(a), { custom: true }))
+        if (replace) {
+          this.answersStore.custom = incoming
+          this.answersStore.deleted = []
+        } else {
+          const ids = new Set(incoming.map((a) => a.id))
+          this.answersStore.custom = this.answersStore.custom.filter((a) => !ids.has(a.id)).concat(incoming)
+          this.answersStore.deleted = this.answersStore.deleted.filter((id) => !ids.has(id))
+        }
+        this.persistAnswers()
+        ok.push(obj.answers.length + ' 条回答')
+      }
+
+      /* 评审记录：按 (case_id, model_id) 覆盖；分数 clamp 0–5；非法状态回落 none */
+      if (withReviews && Array.isArray(obj.reviews) && obj.reviews.length) {
+        let n = 0
+        obj.reviews.forEach((r) => {
+          if (!r || !r.case_id || !r.model_id) return
+          const base = this.blankReview(r.case_id, r.model_id)
+          DIMENSIONS.forEach((d) => {
+            const v = r.scores ? r.scores[d.key] : null
+            if (v === null || v === undefined || v === '') {
+              base.scores[d.key] = null
+              return
+            }
+            const num = Number(v)
+            base.scores[d.key] = Number.isFinite(num) ? Math.max(0, Math.min(MAX_DIM_SCORE, num)) : null
+          })
+          base.failures = Array.isArray(r.failures) ? r.failures.slice() : []
+          base.comment = r.comment || ''
+          base.status = TO_LABEL[r.status] ? r.status : 'none'
+          base.reviewed_at = r.reviewed_at || null
+          base.updated_at = r.updated_at || null
+          base.demo = false
+          this.reviews[keyOf(r.case_id, r.model_id)] = base
+          n++
+        })
+        this.persistReviews()
+        ok.push(n + ' 条评审记录')
+      }
+
+      /* 配置：仅接受已知的流式速度 */
+      if (obj.config && obj.config.stream && STREAM_SPEEDS[obj.config.stream] !== undefined) {
+        this.stream = obj.config.stream
+        this.persistConfig()
+      }
+
+      if (ok.length) this.toast('导入成功：' + ok.join('、'))
+      else this.toast('未从该 JSON 中识别到可导入的数据', true)
+      return ok
+    },
+
+    /* 恢复内置演示数据：参考问题、回答层、评审记录与对话会话全部重置 */
+    resetAll() {
+      this.cases = clone(BUILTIN_CASES)
+      this.answersStore = { builtin: this.answersStore.builtin, custom: [], deleted: [] }
+      this.reviews = {}
+      const s = newSession()
+      this.chat.sessions = [s]
+      this.chat.currentId = s.id
+      this.chat.customModels = []
+      this.chat.active = MODELS.map((m) => m.id)
+      this.chat.selected = null
+      this.chat.reviewMode = true
+      this.chat.editing = null
+      this.chat.animated = {}
+      this.chat.focusCaseId = null
+      this.syncSession()
+      this.persistCases()
+      this.persistAnswers()
+      this.persistReviews()
+      this.persistChat()
+      lsRemove(LS.seeded)
+      this.toast('已恢复内置演示数据')
+    },
+
+    /* 清空全部评审记录（参考问题与回答保留） */
+    clearAllReviews() {
+      this.reviews = {}
+      this.persistReviews()
+      lsRemove(LS.seeded)
+      this.toast('已清空全部评审记录')
+    },
+
+    /* 还原被删除的内置回答 */
+    restoreAnswers() {
+      this.answersStore.deleted = []
+      this.persistAnswers()
+      this.toast('已还原被删除的内置回答')
+    },
+
+    /* 生成并下载汇总报告（与「汇总报告」页共用同一套装配，保证内容一致） */
+    exportReport() {
+      const models = this.allModels()
+      const data = buildReportData({
+        cases: this.cases,
+        answers: this.cases.flatMap((c) => this.answersOf(c.case_id)),
+        reviews: this.allReviews,
+        models,
+        askedCaseIds: this.askedCases.map((c) => c.case_id),
+      })
+      const md = reportMarkdown({ generatedAt: new Date().toLocaleString('zh-CN'), models, ...data })
+      downloadFile(md, '竞技场-汇总报告-' + dayStamp() + '.md', 'text/markdown')
+      this.toast('已导出汇总报告（Markdown）')
     },
 
     /* ------------------------------ 评审编辑弹窗（草稿态，保存才写回） ------------------------------ */
